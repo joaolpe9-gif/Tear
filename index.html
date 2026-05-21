@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TEAR">
+<title>TEAR</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'Segoe UI',sans-serif;background:#0f0f13;min-height:100vh;color:#e8e8e8;padding-bottom:20px}
+button{font-family:'Segoe UI',sans-serif;cursor:pointer}
+input{font-family:'Segoe UI',sans-serif;-webkit-appearance:none}
+input[type=date]{color-scheme:dark}
+::-webkit-scrollbar{display:none}
+.scroll-x{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:14px}
+.scroll-x::-webkit-scrollbar{display:none}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// =========================================================
+// STORAGE
+// =========================================================
+const DB = {
+  get(k){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null; }catch{ return null; } },
+  set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} }
+};
+
+// =========================================================
+// STATE
+// =========================================================
+const S = {
+tela:‘dashboard’, subtela:‘peca’,
+mes: mAtual(),
+editMeta:false,
+conf:{},
+reg:   DB.get(‘tear_reg’)  ||[],
+mov:   DB.get(‘tear_mov’)  ||[],
+ins:   DB.get(‘tear_ins’)  ||[],
+tmp:   DB.get(‘tear_tmp’)  ||[],
+meta:  DB.get(‘tear_meta’) ||{kg:’’,lucro:’’},
+fPeca:  {maquina:‘90cm’,peso:’’,data:hj(),obs:’’},
+fVenda: {peso:’’,venda:’’,custo:‘7.00’,frete:‘nao’,vFrete:’’,cliente:’’,data:hj(),obs:’’},
+fIns:   {desc:’’,valor:’’,data:hj()},
+fTmp:   {data:hj(),horas:’’},
+fMeta:  {kg:’’,lucro:’’},
+};
+
+function save(){ DB.set(‘tear_reg’,S.reg); DB.set(‘tear_mov’,S.mov); DB.set(‘tear_ins’,S.ins); DB.set(‘tear_tmp’,S.tmp); DB.set(‘tear_meta’,S.meta); }
+
+// =========================================================
+// UTILS
+// =========================================================
+function hj(){ return new Date().toISOString().split(‘T’)[0]; }
+function mAtual(){ const d=new Date(); return pad(d.getMonth()+1)+’/’+d.getFullYear(); }
+function pad(n){ return String(n).padStart(2,‘0’); }
+function mD(d){ if(!d)return’’; const[y,m]=d.split(’-’); return m+’/’+y; }
+function fmt(v){ return (parseFloat(v)||0).toLocaleString(‘pt-BR’,{style:‘currency’,currency:‘BRL’}); }
+function fkg(v){ return (parseFloat(v)||0).toFixed(2)+’ kg’; }
+function dSem(d){ return [‘Dom’,‘Seg’,‘Ter’,‘Qua’,‘Qui’,‘Sex’,‘Sáb’][new Date(d+‘T12:00:00’).getDay()]; }
+
+function cV(m){
+const p=parseFloat(m.peso)||0, v=parseFloat(m.venda)||0;
+const c=parseFloat(m.custo)||0, f=parseFloat(m.vFrete)||0;
+const rec=p*v, cst=p*c+f, luc=rec-cst;
+return {rec,cst,luc, marg:rec>0?((luc/rec)*100).toFixed(1):0};
+}
+
+function estoque(){
+const ent=S.mov.filter(m=>m.tipo===‘ent’).reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const sai=S.mov.filter(m=>m.tipo===‘sai’).reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+return {ent,sai,atual:ent-sai};
+}
+
+function statsM(mes){
+const vendas=S.mov.filter(m=>m.tipo===‘sai’&&mD(m.data)===mes);
+const entradas=S.mov.filter(m=>m.tipo===‘ent’&&mD(m.data)===mes);
+const ins=S.ins.filter(i=>mD(i.data)===mes);
+const tmp=S.tmp.filter(t=>mD(t.data)===mes);
+const rec=vendas.reduce((a,m)=>a+cV(m).rec,0);
+const luc=vendas.reduce((a,m)=>a+cV(m).luc,0);
+const cst=vendas.reduce((a,m)=>a+cV(m).cst,0);
+const tIns=ins.reduce((a,i)=>a+(parseFloat(i.valor)||0),0);
+const kgP=entradas.reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const kgV=vendas.reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const dias=tmp.length, horas=tmp.reduce((a,t)=>a+(parseFloat(t.horas)||0),0);
+const lLiq=luc-tIns;
+return {rec,luc,cst,tIns,kgP,kgV,dias,horas,lLiq,
+rend:dias>0?(kgP/dias).toFixed(2):0,
+lHora:horas>0?(lLiq/horas).toFixed(2):0};
+}
+
+function clientes(){
+const mp={};
+S.mov.filter(m=>m.tipo===‘sai’).forEach(m=>{
+if(!mp[m.cliente])mp[m.cliente]={n:m.cliente,kg:0,rec:0,luc:0,qt:0};
+const cv=cV(m);
+mp[m.cliente].kg+=parseFloat(m.peso)||0;
+mp[m.cliente].rec+=cv.rec;
+mp[m.cliente].luc+=cv.luc;
+mp[m.cliente].qt++;
+});
+return Object.values(mp).sort((a,b)=>b.luc-a.luc);
+}
+
+function meses(){
+const all=[…new Set([…S.mov,…S.ins,…S.tmp].map(x=>mD(x.data)).filter(Boolean))].sort().reverse();
+if(!all.includes(mAtual()))all.unshift(mAtual());
+return all;
+}
+
+// =========================================================
+// RENDER
+// =========================================================
+function r(){ document.getElementById(‘root’).innerHTML = html(); bindAll(); }
+
+function html(){
+return header()+`<div style="padding:14px;max-width:480px;margin:0 auto">`+body()+`</div>`;
+}
+
+function header(){
+const tabs=[
+{id:‘dashboard’,ic:‘📊’,lb:‘Resumo’},
+{id:‘novo’,ic:‘➕’,lb:‘Registrar’},
+{id:‘fechamento’,ic:‘📆’,lb:‘Fechamento’},
+{id:‘estoque’,ic:‘📦’,lb:‘Estoque’},
+{id:‘insumos’,ic:‘🔧’,lb:‘Insumos’},
+{id:‘tempo’,ic:‘📅’,lb:‘Tempo’},
+];
+return `<div style="background:#16161e;border-bottom:1px solid #2a2a3a;padding:10px 10px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10"> <div> <div style="font-size:14px;font-weight:800;letter-spacing:2px;color:#00e5a0">⚙️ TEAR</div> <div style="font-size:8px;color:#555">Controle de Produção</div> </div> <div style="display:flex;gap:0"> ${tabs.map(t=>`<button data-nav="${t.id}" style="background:${S.tela===t.id?'#00e5a012':'transparent'};border:none;color:${S.tela===t.id?'#00e5a0':'#666'};padding:4px 5px;border-radius:8px;display:flex;flex-direction:column;align-items:center;gap:1px">
+<span style="font-size:13px">${t.ic}</span>
+<span style="font-size:7px">${t.lb}</span>
+</button>`).join(’’)}
+</div>
+
+  </div>`;
+}
+
+function body(){
+if(S.tela===‘dashboard’)  return dash();
+if(S.tela===‘novo’)       return novo();
+if(S.tela===‘fechamento’) return fech();
+if(S.tela===‘estoque’)    return estoq();
+if(S.tela===‘insumos’)    return insum();
+if(S.tela===‘tempo’)      return tempo();
+return ‘’;
+}
+
+// =========================================================
+// DASHBOARD
+// =========================================================
+function dash(){
+const mes=S.mes, st=statsM(mes), e=estoque();
+const mK=parseFloat(S.meta.kg)||0, mL=parseFloat(S.meta.lucro)||0;
+const pK=mK>0?Math.min((st.kgP/mK)*100,100):0;
+const pL=mL>0?Math.min((st.lLiq/mL)*100,100):0;
+const p90=S.mov.filter(m=>m.tipo===‘ent’&&m.maquina===‘90cm’).reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const p60=S.mov.filter(m=>m.tipo===‘ent’&&m.maquina===‘60cm’).reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const ults=S.reg.slice(0,5);
+
+return filtMes()+`
+
+  <div style="background:#16161e;border:1px solid #2a2a3a;border-radius:16px;padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px">
+    <div>
+      <div style="font-size:9px;letter-spacing:2px;color:#555;text-transform:uppercase;margin-bottom:4px">ESTOQUE ATUAL</div>
+      <div style="font-size:26px;font-weight:900;color:${e.atual<0?'#ff6b6b':'#00e5a0'}">${fkg(e.atual)}</div>
+      <div style="font-size:11px;color:#555;margin-top:6px"><span style="color:#00e5a0">▲${fkg(e.ent)}</span> · <span style="color:#ff6b6b">▼${fkg(e.sai)}</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;min-width:100px">
+      <button data-nav="novo" data-sub="venda" style="background:#ff6b6b20;color:#ff6b6b;border:1px solid #ff6b6b40;border-radius:8px;padding:8px 10px;font-size:11px;font-weight:700">🛒 Venda</button>
+      <button data-nav="novo" data-sub="peca"  style="background:#00e5a020;color:#00e5a0;border:1px solid #00e5a040;border-radius:8px;padding:8px 10px;font-size:11px;font-weight:700">📥 Peça</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+    ${cMaq('90cm','#00e5a0',fkg(p90),'produzido')}
+    ${cMaq('60cm','#4fc3f7',fkg(p60),'produzido')}
+  </div>
+  <div style="font-size:10px;letter-spacing:2px;color:#555;margin-bottom:8px;text-transform:uppercase">Mês: ${mes}</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+    ${cCard('#4fc3f7','💰','Receita',fmt(st.rec))}
+    ${cCard(st.lLiq>=0?'#a8ff78':'#ff6b6b','📈','Lucro líq.',fmt(st.lLiq))}
+    ${cCard('#ff6b6b','🔧','Insumos',fmt(st.tIns))}
+    ${cCard('#f9ca24','⚡','R$/hora','R$ '+st.lHora)}
+  </div>
+
+${(mK>0||mL>0)?`
+
+  <div style="background:#16161e;border:1px solid #2a2a3a;border-radius:14px;padding:14px;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="font-size:10px;letter-spacing:2px;color:#555;text-transform:uppercase">METAS — ${mes}</div>
+      <button id="btnEditMeta" style="background:transparent;border:1px solid #2a2a3a;color:#555;border-radius:6px;padding:4px 8px;font-size:11px">✏️ Editar</button>
+    </div>
+    ${mK>0?`<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span style="color:#888">Produção (kg)</span><span style="color:#00e5a0;font-weight:700">${st.kgP.toFixed(1)} / ${mK} kg</span></div>
+      <div style="background:#2a2a3a;border-radius:8px;height:8px"><div style="width:${pK}%;background:#00e5a0;height:8px;border-radius:8px"></div></div>
+    </div>`:''}
+    ${mL>0?`<div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span style="color:#888">Lucro líquido</span><span style="color:#a8ff78;font-weight:700">${fmt(st.lLiq)} / ${fmt(mL)}</span></div>
+      <div style="background:#2a2a3a;border-radius:8px;height:8px"><div style="width:${pL}%;background:#a8ff78;height:8px;border-radius:8px"></div></div>
+    </div>`:''}
+  </div>`
+  :`<button id="btnEditMeta" style="width:100%;background:transparent;border:1px solid #2a2a3a;color:#555;border-radius:10px;padding:10px;font-size:13px;margin-bottom:14px">🎯 Definir metas do mês</button>`}
+
+${S.editMeta?formMeta():’’}
+
+${st.dias>0?`<div style="background:#16161e;border:1px solid #2a2a3a;border-radius:14px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
+<div>
+<div style="font-size:10px;color:#555;letter-spacing:2px;text-transform:uppercase">RENDIMENTO — ${mes}</div>
+<div style="font-size:11px;color:#555;margin-top:2px">${st.dias} dias · ${st.horas}h</div>
+</div>
+<div style="text-align:right"><div style="font-size:10px;color:#555">kg/dia</div><div style="font-size:20px;font-weight:900;color:#f9ca24">${st.rend}</div></div>
+
+  </div>`:''}
+
+  <div style="font-size:10px;letter-spacing:2px;color:#555;margin-bottom:10px;text-transform:uppercase">Últimas peças</div>
+  ${ults.length===0?`<div style="color:#555;text-align:center;padding:32px 0;font-size:13px">Nenhuma peça. <span data-nav="novo" style="color:#00e5a0">Registrar →</span></div>`:''}
+  ${ults.map(cPeca).join('')}`;
+}
+
+// =========================================================
+// NOVO
+// =========================================================
+function novo(){
+return `<div style="display:flex;gap:8px;margin-bottom:14px"> ${['peca','venda'].map(t=>`<button data-sub="${t}" style="flex:1;background:${S.subtela===t?'#00e5a015':'#16161e'};border:1px solid ${S.subtela===t?'#00e5a0':'#2a2a3a'};color:${S.subtela===t?'#00e5a0':'#666'};border-radius:10px;padding:10px;text-align:left">
+<div style="font-size:12px;font-weight:700">${t===‘peca’?‘📥 Registrar Peça’:‘🛒 Registrar Venda’}</div>
+<div style="font-size:9px;color:#555;margin-top:2px">${t===‘peca’?‘Entrada no estoque’:‘Saída + margem’}</div>
+</button>`).join(’’)}
+
+  </div>
+  ${S.subtela==='peca'?formPeca():formVenda()}`;
+}
+
+function formPeca(){
+const f=S.fPeca;
+return `<div style="background:#16161e;border-radius:16px;padding:18px 16px;border:1px solid #2a2a3a"> <div style="font-size:17px;font-weight:800;margin-bottom:4px;color:#00e5a0">📥 Registrar Peça</div> <div style="font-size:11px;color:#555;margin-bottom:14px">Pode ser hoje ou qualquer data passada</div> <div style="font-size:11px;color:#666;letter-spacing:1px;margin-bottom:6px;text-transform:uppercase">Máquina</div> <div style="display:flex;gap:8px;margin-bottom:16px"> ${['90cm','60cm'].map(m=>`<button data-maq="${m}" style="flex:1;padding:10px;border-radius:10px;border:1px solid ${f.maquina===m?'#00e5a0':'#2a2a3a'};background:${f.maquina===m?'#00e5a020':'transparent'};color:${f.maquina===m?'#00e5a0':'#666'};font-size:14px;font-weight:700">${m}</button>`).join('')} </div> <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px"> ${fi('Peso (kg)','number','fp_peso',f.peso,'ex: 21')} ${fi('Data da peça','date','fp_data',f.data,'')} </div> ${fi('Observações','text','fp_obs',f.obs,'Fio, cor, tipo...')} ${f.peso?`<div style="background:#0f0f13;border-radius:10px;padding:12px 14px;margin-bottom:14px;border:1px solid #2a2a3a">
+<div style="font-size:10px;color:#555;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase">Pré-visualização</div>
+<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px"><span>Máquina</span><span style="color:${f.maquina==='90cm'?'#00e5a0':'#4fc3f7'};font-weight:700">${f.maquina}</span></div>
+<div style="display:flex;justify-content:space-between;font-size:14px"><span>Entra no estoque</span><span style="color:#00e5a0;font-weight:700">${fkg(f.peso)}</span></div>
+</div>`:’’}
+<button id="btnSalvarPeca" style="width:100%;background:#00e5a0;color:#0f0f13;border:none;border-radius:10px;padding:13px;font-size:14px;font-weight:800;opacity:${f.peso?1:0.4}">✅ Registrar Peça</button>
+
+  </div>`;
+}
+
+function formVenda(){
+const f=S.fVenda, e=estoque();
+const pp=parseFloat(f.peso)||0, pv=parseFloat(f.venda)||0;
+const pc=parseFloat(f.custo)||0, pf=f.frete===‘sim’?(parseFloat(f.vFrete)||0):0;
+const rec=pp*pv, cst=pp*pc+pf, luc=rec-cst, marg=rec>0?((luc/rec)*100).toFixed(1):0;
+const ok=f.peso&&f.cliente&&f.custo&&f.venda;
+return `<div style="background:#16161e;border-radius:16px;padding:18px 16px;border:1px solid #2a2a3a"> <div style="font-size:17px;font-weight:800;margin-bottom:4px;color:#00e5a0">🛒 Registrar Venda</div> <div style="font-size:11px;color:#555;margin-bottom:14px">Custo padrão R$7,00/kg — altere se necessário</div> <div style="background:#0f0f13;border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center"> <span style="font-size:10px;color:#555;letter-spacing:1px;text-transform:uppercase">Disponível</span> <span style="color:${e.atual<0?'#ff6b6b':'#00e5a0'};font-weight:900;font-size:20px">${fkg(e.atual)}</span> </div> ${fi('Cliente *','text','fv_cliente',f.cliente,'Nome do cliente')} <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px"> ${fi('Peso vendido (kg)','number','fv_peso',f.peso,'ex: 20')} ${fi('Preço venda R$/kg','number','fv_venda',f.venda,'ex: 11.50')} ${fi('Custo fio R$/kg','number','fv_custo',f.custo,'ex: 7.00')} ${fi('Data','date','fv_data',f.data,'')} </div> <div style="font-size:11px;color:#666;letter-spacing:1px;margin-bottom:6px;text-transform:uppercase">Tem frete?</div> <div style="display:flex;gap:8px;margin-bottom:${f.frete==='sim'?'8':'16'}px"> ${['nao','sim'].map(op=>`<button data-frete="${op}" style="flex:1;padding:10px;border-radius:10px;border:1px solid ${f.frete===op?(op==='sim'?'#ff6b6b':'#00e5a0'):'#2a2a3a'};background:${f.frete===op?(op==='sim'?'#ff6b6b18':'#00e5a018'):'transparent'};color:${f.frete===op?(op==='sim'?'#ff6b6b':'#00e5a0'):'#666'};font-size:13px;font-weight:700">${op===‘nao’?‘Não tem’:‘Tem frete’}</button>`).join('')} </div> ${f.frete==='sim'?fi('Valor do frete (R$)','number','fv_vFrete',f.vFrete,'ex: 50.00'):''} ${fi('Observações','text','fv_obs',f.obs,'Detalhes da venda...')} ${pp>0&&pv>0&&pc>0?`<div style="background:#0f0f13;border-radius:10px;padding:12px 14px;margin-bottom:14px;border:1px solid #2a2a3a">
+<div style="font-size:10px;color:#555;letter-spacing:1px;margin-bottom:8px;text-transform:uppercase">Margem da venda</div>
+<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px"><span>Receita (${fmt(pv)}/kg)</span><span style="color:#4fc3f7;font-weight:700">${fmt(rec)}</span></div>
+<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px"><span>Custo fio (${fmt(pc)}/kg)</span><span style="color:#ff6b6b">-${fmt(pp*pc)}</span></div>
+${pf>0?`<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px"><span>Frete</span><span style="color:#ff6b6b">-${fmt(pf)}</span></div>`:’’}
+<div style="display:flex;justify-content:space-between;font-size:14px;border-top:1px solid #2a2a3a;padding-top:8px;margin-top:4px">
+<span style="font-weight:700">Lucro líquido</span>
+<span style="color:${luc>=0?'#a8ff78':'#ff6b6b'};font-weight:900;font-size:16px">${fmt(luc)} <span style="font-size:11px;font-weight:400">(${marg}%)</span></span>
+</div>
+<div style="display:flex;justify-content:space-between;font-size:14px;margin-top:6px"><span>Estoque após</span><span style="color:${e.atual-pp<0?'#ff6b6b':'#a8ff78'};font-weight:700">${fkg(e.atual-pp)}</span></div>
+</div>`:’’}
+<button id="btnSalvarVenda" style="width:100%;background:#4fc3f7;color:#0f0f13;border:none;border-radius:10px;padding:13px;font-size:14px;font-weight:800;opacity:${ok?1:0.4}">🛒 Registrar Venda</button>
+
+  </div>`;
+}
+
+function formMeta(){
+const f=S.fMeta;
+return `<div style="background:#16161e;border-radius:16px;padding:16px;border:1px solid #2a2a3a;margin-bottom:14px">
+<div style="font-size:14px;font-weight:800;margin-bottom:12px;color:#00e5a0">🎯 Metas mensais</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+${fi(‘Meta kg’,‘number’,‘fm_kg’,f.kg,‘ex: 200’)}
+${fi(‘Meta lucro R$’,‘number’,‘fm_lucro’,f.lucro,‘ex: 1500’)}
+</div>
+<div style="display:flex;gap:8px">
+<button id="btnSalvarMeta" style="flex:1;background:#00e5a0;color:#0f0f13;border:none;border-radius:10px;padding:10px;font-size:13px;font-weight:800">Salvar metas</button>
+<button id="btnCancelMeta" style="flex:1;background:#2a2a3a;color:#888;border:none;border-radius:10px;padding:10px;font-size:13px">Cancelar</button>
+</div>
+
+  </div>`;
+}
+
+// =========================================================
+// FECHAMENTO
+// =========================================================
+function fech(){
+const mes=S.mes, st=statsM(mes), cl=clientes();
+const fr=(lb,v,cor,bold)=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #1e1e28">
+<span style="font-size:13px;color:${bold?'#e8e8e8':'#888'};font-weight:${bold?700:400}">${lb}</span>
+<span style="font-size:13px;color:${cor};font-weight:${bold?900:600}">${v}</span>
+
+  </div>`;
+  return filtMes()+`
+  <div style="background:#16161e;border:1px solid #2a2a3a;border-radius:16px;padding:16px;margin-bottom:14px">
+    <div style="font-size:15px;font-weight:800;color:#00e5a0;margin-bottom:12px">📆 Fechamento — ${mes}</div>
+    ${fr('Receita bruta',fmt(st.rec),'#4fc3f7')}
+    ${fr('Custo fio + frete','-'+fmt(st.cst),'#ff6b6b')}
+    ${fr('Insumos','-'+fmt(st.tIns),'#ff6b6b')}
+    <div style="border-top:1px solid #2a2a3a;margin:8px 0"></div>
+    ${fr('Lucro líquido',fmt(st.lLiq),st.lLiq>=0?'#a8ff78':'#ff6b6b',true)}
+    <div style="border-top:1px solid #2a2a3a;margin:8px 0"></div>
+    ${fr('Kg produzido',fkg(st.kgP),'#00e5a0')}
+    ${fr('Kg vendido',fkg(st.kgV),'#4fc3f7')}
+    ${fr('Dias trabalhados',st.dias+' dias','#a8ff78')}
+    ${fr('Horas trabalhadas',st.horas+'h','#a8ff78')}
+    ${fr('Rendimento (kg/dia)',st.rend+' kg','#f9ca24')}
+    ${fr('Lucro por hora','R$ '+st.lHora+'/h','#f9ca24')}
+  </div>
+  ${cl.length>0?`<div style="font-size:10px;letter-spacing:2px;color:#555;margin-bottom:10px;text-transform:uppercase">Comparativo por cliente</div>
+  ${cl.map(c=>{
+    const mg=c.rec>0?((c.luc/c.rec)*100).toFixed(1):0;
+    return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-left:3px solid ${c.luc>=0?'#a8ff78':'#ff6b6b'};margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:700">👤 ${c.n}</div>
+        <div style="color:${c.luc>=0?'#a8ff78':'#ff6b6b'};font-weight:900">${fmt(c.luc)}</div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        ${st2('Kg vendido',fkg(c.kg),'#ccc')}${st2('Receita',fmt(c.rec),'#4fc3f7')}${st2('Margem',mg+'%',c.luc>=0?'#a8ff78':'#ff6b6b')}${st2('Vendas',c.qt+'x','#ccc')}
+      </div>
+    </div>`;
+  }).join('')}`:''}`;
+}
+
+// =========================================================
+// ESTOQUE
+// =========================================================
+function estoq(){
+const e=estoque();
+const p90=S.mov.filter(m=>m.tipo===‘ent’&&m.maquina===‘90cm’).reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const p60=S.mov.filter(m=>m.tipo===‘ent’&&m.maquina===‘60cm’).reduce((a,m)=>a+(parseFloat(m.peso)||0),0);
+const sorted=[…S.mov].sort((a,b)=>b.data.localeCompare(a.data));
+return `<div style="background:#16161e;border:1px solid #2a2a3a;border-radius:16px;padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
+<div>
+<div style="font-size:9px;letter-spacing:2px;color:#555;text-transform:uppercase;margin-bottom:4px">ESTOQUE ATUAL</div>
+<div style="font-size:26px;font-weight:900;color:${e.atual<0?'#ff6b6b':'#00e5a0'}">${fkg(e.atual)}</div>
+<div style="font-size:11px;color:#555;margin-top:6px"><span style="color:#00e5a0">▲${fkg(e.ent)}</span> · <span style="color:#ff6b6b">▼${fkg(e.sai)}</span></div>
+</div>
+
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+    ${cMaq('90cm','#00e5a0',fkg(p90),'produzido')}
+    ${cMaq('60cm','#4fc3f7',fkg(p60),'produzido')}
+  </div>
+  <div style="font-size:10px;letter-spacing:2px;color:#555;margin-bottom:10px;text-transform:uppercase">Movimentações</div>
+  ${sorted.length===0?'<div style="color:#555;text-align:center;padding:32px 0;font-size:13px">Nenhuma movimentação.</div>':''}
+  ${sorted.map(cMov).join('')}`;
+}
+
+// =========================================================
+// INSUMOS
+// =========================================================
+function insum(){
+const mes=S.mes;
+const ins=S.ins.filter(i=>mD(i.data)===mes);
+const total=ins.reduce((a,i)=>a+(parseFloat(i.valor)||0),0);
+const f=S.fIns;
+return filtMes()+`
+
+  <div style="background:#16161e;border:1px solid #2a2a3a;border-radius:16px;padding:16px;margin-bottom:14px">
+    <div style="font-size:9px;letter-spacing:2px;color:#555;text-transform:uppercase;margin-bottom:4px">GASTO COM INSUMOS</div>
+    <div style="font-size:26px;font-weight:900;color:#ff6b6b">${fmt(total)}</div>
+    <div style="font-size:11px;color:#555;margin-top:6px">${ins.length} lançamento(s) em ${mes}</div>
+  </div>
+  <div style="background:#16161e;border-radius:16px;padding:16px;border:1px solid #2a2a3a;margin-bottom:14px">
+    <div style="font-size:14px;font-weight:800;margin-bottom:12px;color:#00e5a0">➕ Novo Insumo</div>
+    ${fi('Descrição','text','fi_desc',f.desc,'ex: Agulha, Óleo, Linha...')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      ${fi('Valor (R$)','number','fi_valor',f.valor,'ex: 15.90')}
+      ${fi('Data','date','fi_data',f.data,'')}
+    </div>
+    <button id="btnSalvarIns" style="width:100%;background:#ff6b6b;color:#fff;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;opacity:${f.desc&&f.valor?1:0.4}">✅ Lançar Insumo</button>
+  </div>
+  <div style="font-size:10px;letter-spacing:2px;color:#555;margin-bottom:10px;text-transform:uppercase">Histórico — ${mes}</div>
+  ${ins.length===0?`<div style="color:#555;text-align:center;padding:32px 0;font-size:13px">Sem insumos em ${mes}.</div>`:''}
+  ${ins.map(cIns).join('')}`;
+}
+
+// =========================================================
+// TEMPO
+// =========================================================
+function tempo(){
+const mes=S.mes;
+const tmp=S.tmp.filter(t=>mD(t.data)===mes);
+const dias=tmp.length, horas=tmp.reduce((a,t)=>a+(parseFloat(t.horas)||0),0);
+const f=S.fTmp;
+const sorted=[…tmp].sort((a,b)=>b.data.localeCompare(a.data));
+return filtMes()+`
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+    ${cMaq2('Dias trabalhados','#a8ff78',String(dias),'em '+mes)}
+    ${cMaq2('Horas trabalhadas','#f9ca24',horas+'h','em '+mes)}
+  </div>
+  <div style="background:#16161e;border-radius:16px;padding:16px;border:1px solid #2a2a3a;margin-bottom:14px">
+    <div style="font-size:14px;font-weight:800;margin-bottom:4px;color:#00e5a0">✅ Marcar dia trabalhado</div>
+    <div style="font-size:11px;color:#555;margin-bottom:12px">Selecione o dia e informe as horas</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">
+      ${fi('Data','date','ft_data',f.data,'')}
+      ${fi('Horas trabalhadas','number','ft_horas',f.horas,'ex: 4')}
+    </div>
+    <button id="btnSalvarTmp" style="width:100%;background:#a8ff78;color:#0f0f13;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:800;opacity:${f.horas?1:0.4}">✅ Marcar Dia</button>
+  </div>
+  <div style="font-size:10px;letter-spacing:2px;color:#555;margin-bottom:10px;text-transform:uppercase">Dias em ${mes}</div>
+  ${sorted.length===0?`<div style="color:#555;text-align:center;padding:32px 0;font-size:13px">Nenhum dia em ${mes}.</div>`:''}
+  <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(cTmp).join('')}</div>`;
+}
+
+// =========================================================
+// CARD HELPERS
+// =========================================================
+function filtMes(){
+const ms=meses();
+return `<div class="scroll-x">${ms.map(m=>`<button data-mes="${m}" style="flex-shrink:0;padding:5px 12px;border-radius:20px;border:1px solid ${S.mes===m?'#00e5a0':'#2a2a3a'};background:${S.mes===m?'#00e5a020':'transparent'};color:${S.mes===m?'#00e5a0':'#888'};font-size:11px">${m}</button>`).join('')}</div>`;
+}
+function cCard(cor,ic,lb,v){ return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-top:3px solid ${cor}"><div style="font-size:18px">${ic}</div><div style="font-size:10px;color:#888;margin-top:3px">${lb}</div><div style="font-size:13px;font-weight:700;color:${cor};margin-top:2px">${v}</div></div>`; }
+function cMaq(maq,cor,v,sub){ return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-top:3px solid ${cor}"><div style="font-size:10px;color:#555;letter-spacing:2px;text-transform:uppercase">Máq. ${maq}</div><div style="font-size:18px;font-weight:900;color:${cor};margin-top:4px">${v}</div><div style="font-size:10px;color:#555;margin-top:2px">${sub}</div></div>`; }
+function cMaq2(lb,cor,v,sub){ return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-top:3px solid ${cor}"><div style="font-size:10px;color:#555;letter-spacing:2px;text-transform:uppercase">${lb}</div><div style="font-size:18px;font-weight:900;color:${cor};margin-top:4px">${v}</div><div style="font-size:10px;color:#555;margin-top:2px">${sub}</div></div>`; }
+function st2(lb,v,cor){ return `<div><div style="font-size:9px;color:#555;letter-spacing:1px">${lb}</div><div style="font-size:13px;font-weight:600;color:${cor}">${v}</div></div>`; }
+function fi(lb,tp,id,val,ph){ return `<div style="margin-bottom:12px"><label style="display:block;font-size:11px;color:#666;letter-spacing:1px;margin-bottom:4px;text-transform:uppercase">${lb}</label><input type="${tp}" id="${id}" value="${val||''}" placeholder="${ph}" style="width:100%;background:#0f0f13;border:1px solid #2a2a3a;border-radius:8px;color:#e8e8e8;font-size:15px;padding:10px 12px;outline:none;box-sizing:border-box" inputmode="${tp==='number'?'decimal':'text'}"></div>`; }
+
+function cPeca(reg){
+const id=reg.id, conf=S.conf[id];
+return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;margin-bottom:10px"> <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"> <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"> <span style="background:${reg.maquina==='90cm'?'#00e5a020':'#4fc3f720'};color:${reg.maquina==='90cm'?'#00e5a0':'#4fc3f7'};border:1px solid ${reg.maquina==='90cm'?'#00e5a040':'#4fc3f740'};border-radius:6px;font-size:10px;padding:2px 8px;font-weight:700">${reg.maquina}</span> <span style="font-size:11px;color:#666">${reg.data}</span> ${reg.obs?`<span style="font-size:11px;color:#666">· ${reg.obs}</span>`:''} </div> <div style="display:flex;gap:8px;align-items:center"> <span style="color:#00e5a0;font-weight:700">${fkg(reg.peso)}</span> ${conf?`<button data-delreg="${id}" style="background:transparent;border:none;color:#ff6b6b;font-size:12px;padding:4px">Confirmar</button>` :`<button data-confreg="${id}" style="background:transparent;border:none;color:#444;font-size:14px;padding:4px">🗑</button>`}
+</div>
+</div>
+
+  </div>`;
+}
+
+function cMov(m){
+const id=m.id, conf=S.conf[id];
+const isE=m.tipo===‘ent’, cor=isE?’#00e5a0’:’#ff6b6b’;
+const cv=isE?null:cV(m);
+return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-left:3px solid ${cor};margin-bottom:10px"> <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"> <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"> <span style="border-radius:6px;font-size:10px;padding:2px 8px;font-weight:700;border:1px solid;background:${isE?'#00e5a020':'#ff6b6b20'};color:${cor};border-color:${isE?'#00e5a040':'#ff6b6b40'}">${isE?'▲ ENTRADA':'▼ SAÍDA'}</span> ${m.maquina?`<span style="background:${m.maquina==='90cm'?'#00e5a020':'#4fc3f720'};color:${m.maquina==='90cm'?'#00e5a0':'#4fc3f7'};border:1px solid ${m.maquina==='90cm'?'#00e5a040':'#4fc3f740'};border-radius:6px;font-size:10px;padding:2px 8px;font-weight:700">${m.maquina}</span>`:''} <span style="font-size:11px;color:#666">${m.data}</span> ${m.cliente?`<span style="font-size:11px;color:#aaa">👤 ${m.cliente}</span>`:''} </div> <div style="display:flex;gap:8px;align-items:center"> <span style="color:${cor};font-weight:700">${isE?'+':'-'}${fkg(m.peso)}</span> ${conf?`<button data-delmov="${id}" style="background:transparent;border:none;color:#ff6b6b;font-size:12px;padding:4px">Confirmar</button>` :`<button data-confmov="${id}" style="background:transparent;border:none;color:#444;font-size:14px;padding:4px">🗑</button>`} </div> </div> ${!isE&&cv?`<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">
+${st2(‘Receita’,fmt(cv.rec),’#4fc3f7’)}${st2(‘Custo’,‘R$’+parseFloat(m.custo).toFixed(2)+’/kg’,’#ff6b6b’)}
+${parseFloat(m.vFrete)>0?st2(‘Frete’,fmt(parseFloat(m.vFrete)),’#ff6b6b’):’’}
+${st2(‘Lucro’,fmt(cv.luc),cv.luc>=0?’#a8ff78’:’#ff6b6b’)}${st2(‘Margem’,cv.marg+’%’,cv.luc>=0?’#a8ff78’:’#ff6b6b’)}
+</div>`:''} ${m.obs?`<div style="font-size:11px;color:#666;margin-top:8px;border-top:1px solid #2a2a3a;padding-top:8px">📝 ${m.obs}</div>`:’’}
+
+  </div>`;
+}
+
+function cIns(i){
+const id=i.id, conf=S.conf[id];
+return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-left:3px solid #ff6b6b;margin-bottom:10px"> <div style="display:flex;justify-content:space-between;align-items:center"> <div style="display:flex;align-items:center;gap:8px"> <span style="font-size:13px;color:#ccc">${i.desc}</span> <span style="font-size:11px;color:#666">${i.data}</span> </div> <div style="display:flex;gap:8px;align-items:center"> <span style="color:#ff6b6b;font-weight:700">${fmt(parseFloat(i.valor)||0)}</span> ${conf?`<button data-delins="${id}" style="background:transparent;border:none;color:#ff6b6b;font-size:12px;padding:4px">Confirmar</button>` :`<button data-confins="${id}" style="background:transparent;border:none;color:#444;font-size:14px;padding:4px">🗑</button>`}
+</div>
+</div>
+
+  </div>`;
+}
+
+function cTmp(t){
+const id=t.id, conf=S.conf[id];
+const ds=dSem(t.data), dia=t.data.split(’-’)[2], mm=t.data.split(’-’)[1], yy=t.data.split(’-’)[0];
+return `<div style="background:#16161e;border-radius:12px;padding:12px 14px;border:1px solid #2a2a3a;border-left:3px solid #a8ff78;display:flex;justify-content:space-between;align-items:center"> <div style="display:flex;align-items:center;gap:10px"> <div style="background:#a8ff7820;border:1px solid #a8ff7840;border-radius:8px;padding:6px 10px;text-align:center;min-width:48px"> <div style="font-size:10px;color:#a8ff78;font-weight:700">${ds}</div> <div style="font-size:14px;color:#a8ff78;font-weight:900">${dia}</div> </div> <div> <div style="font-size:11px;color:#555">${mm}/${yy}</div> <div style="font-size:14px;color:#f9ca24;font-weight:700">${t.horas}h trabalhadas</div> </div> </div> ${conf?`<button data-deltmp="${id}" style="background:transparent;border:none;color:#ff6b6b;font-size:12px;padding:4px">Confirmar</button>` :`<button data-conftmp="${id}" style="background:transparent;border:none;color:#444;font-size:14px;padding:4px">🗑</button>`}
+
+  </div>`;
+}
+
+// =========================================================
+// BIND EVENTS
+// =========================================================
+function bindAll(){
+// nav
+document.querySelectorAll(’[data-nav]’).forEach(el=>{
+el.addEventListener(‘click’,()=>{
+S.tela=el.dataset.nav;
+if(el.dataset.sub) S.subtela=el.dataset.sub;
+r();
+});
+});
+// subtela
+document.querySelectorAll(’[data-sub]’).forEach(el=>{
+el.addEventListener(‘click’,()=>{ S.subtela=el.dataset.sub; r(); });
+});
+// mes
+document.querySelectorAll(’[data-mes]’).forEach(el=>{
+el.addEventListener(‘click’,()=>{ S.mes=el.dataset.mes; r(); });
+});
+// maquina
+document.querySelectorAll(’[data-maq]’).forEach(el=>{
+el.addEventListener(‘click’,()=>{ S.fPeca.maquina=el.dataset.maq; r(); });
+});
+// frete
+document.querySelectorAll(’[data-frete]’).forEach(el=>{
+el.addEventListener(‘click’,()=>{ S.fVenda.frete=el.dataset.frete; S.fVenda.vFrete=’’; r(); });
+});
+// inputs form peca
+[‘fp_peso’,‘fp_data’,‘fp_obs’].forEach(id=>{
+const el=document.getElementById(id);
+if(el) el.addEventListener(‘input’,()=>{ S.fPeca[id.replace(‘fp_’,’’)]=el.value; r(); });
+});
+// inputs form venda
+[‘fv_peso’,‘fv_venda’,‘fv_custo’,‘fv_data’,‘fv_cliente’,‘fv_obs’,‘fv_vFrete’].forEach(id=>{
+const el=document.getElementById(id);
+if(el) el.addEventListener(‘input’,()=>{ S.fVenda[id.replace(‘fv_’,’’)]=el.value; r(); });
+});
+// inputs insumo
+[‘fi_desc’,‘fi_valor’,‘fi_data’].forEach(id=>{
+const el=document.getElementById(id);
+if(el) el.addEventListener(‘input’,()=>{ S.fIns[id.replace(‘fi_’,’’)]=el.value; r(); });
+});
+// inputs tempo
+[‘ft_data’,‘ft_horas’].forEach(id=>{
+const el=document.getElementById(id);
+if(el) el.addEventListener(‘input’,()=>{ S.fTmp[id.replace(‘ft_’,’’)]=el.value; r(); });
+});
+// inputs meta
+[‘fm_kg’,‘fm_lucro’].forEach(id=>{
+const el=document.getElementById(id);
+if(el) el.addEventListener(‘input’,()=>{ S.fMeta[id.replace(‘fm_’,’’)]=el.value; });
+});
+// botões salvar
+const bSP=document.getElementById(‘btnSalvarPeca’);
+if(bSP) bSP.addEventListener(‘click’,salvarPeca);
+const bSV=document.getElementById(‘btnSalvarVenda’);
+if(bSV) bSV.addEventListener(‘click’,salvarVenda);
+const bSI=document.getElementById(‘btnSalvarIns’);
+if(bSI) bSI.addEventListener(‘click’,salvarIns);
+const bST=document.getElementById(‘btnSalvarTmp’);
+if(bST) bST.addEventListener(‘click’,salvarTmp);
+const bSM=document.getElementById(‘btnSalvarMeta’);
+if(bSM) bSM.addEventListener(‘click’,salvarMeta);
+const bCM=document.getElementById(‘btnCancelMeta’);
+if(bCM) bCM.addEventListener(‘click’,()=>{ S.editMeta=false; r(); });
+const bEM=document.getElementById(‘btnEditMeta’);
+if(bEM) bEM.addEventListener(‘click’,()=>{ S.fMeta={…S.meta}; S.editMeta=true; r(); });
+// confirmar/deletar
+document.querySelectorAll(’[data-confreg]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.conf[el.dataset.confreg]=true; r(); }));
+document.querySelectorAll(’[data-delreg]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.reg=S.reg.filter(x=>x.id!=el.dataset.delreg); delete S.conf[el.dataset.delreg]; save(); r(); }));
+document.querySelectorAll(’[data-confmov]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.conf[el.dataset.confmov]=true; r(); }));
+document.querySelectorAll(’[data-delmov]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.mov=S.mov.filter(x=>x.id!=el.dataset.delmov); delete S.conf[el.dataset.delmov]; save(); r(); }));
+document.querySelectorAll(’[data-confins]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.conf[el.dataset.confins]=true; r(); }));
+document.querySelectorAll(’[data-delins]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.ins=S.ins.filter(x=>x.id!=el.dataset.delins); delete S.conf[el.dataset.delins]; save(); r(); }));
+document.querySelectorAll(’[data-conftmp]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.conf[el.dataset.conftmp]=true; r(); }));
+document.querySelectorAll(’[data-deltmp]’).forEach(el=>el.addEventListener(‘click’,()=>{ S.tmp=S.tmp.filter(x=>x.id!=el.dataset.deltmp); delete S.conf[el.dataset.deltmp]; save(); r(); }));
+}
+
+// =========================================================
+// AÇÕES
+// =========================================================
+function salvarPeca(){
+const f=S.fPeca; if(!f.peso) return;
+const id=Date.now();
+S.reg.unshift({…f,id});
+S.mov.unshift({id:id+1,tipo:‘ent’,peso:f.peso,maquina:f.maquina,data:f.data,obs:f.obs});
+S.fPeca={maquina:f.maquina,peso:’’,data:hj(),obs:’’};
+save(); S.tela=‘dashboard’; r();
+}
+
+function salvarVenda(){
+const f=S.fVenda; if(!f.peso||!f.cliente||!f.custo||!f.venda) return;
+S.mov.unshift({id:Date.now(),tipo:‘sai’,peso:f.peso,venda:f.venda,custo:f.custo,frete:f.frete,vFrete:f.frete===‘sim’?f.vFrete:‘0’,cliente:f.cliente,data:f.data,obs:f.obs});
+S.fVenda={peso:’’,venda:’’,custo:‘7.00’,frete:‘nao’,vFrete:’’,cliente:’’,data:hj(),obs:’’};
+save(); S.tela=‘estoque’; r();
+}
+
+function salvarIns(){
+const f=S.fIns; if(!f.desc||!f.valor) return;
+S.ins.unshift({…f,id:Date.now()});
+S.fIns={desc:’’,valor:’’,data:hj()};
+save(); r();
+}
+
+function salvarTmp(){
+const f=S.fTmp; if(!f.horas) return;
+if(S.tmp.find(t=>t.data===f.data)){ alert(‘Já existe registro para esse dia.’); return; }
+S.tmp.unshift({…f,id:Date.now()});
+S.fTmp={data:hj(),horas:’’};
+save(); r();
+}
+
+function salvarMeta(){
+S.meta={…S.fMeta}; S.editMeta=false;
+save(); r();
+}
+
+// =========================================================
+// INIT
+// =========================================================
+r();
+</script>
+
+</body>
+</html>
